@@ -9,8 +9,8 @@
   * {box-sizing:border-box}
   :root{color-scheme:dark}
   html,body {width:100%;height:100%;padding:0;margin:0;overflow:hidden;background:#02030b;color:#e8efff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;touch-action:none}
-  #sky,#warpCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-  #sky{z-index:1}#warpCanvas{pointer-events:none;z-index:3}
+  #sky,#cityCanvas,#warpCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  #sky{z-index:1}#cityCanvas{z-index:2;pointer-events:none}#warpCanvas{pointer-events:none;z-index:3}
   body:after{content:"";position:absolute;inset:0;pointer-events:none;z-index:4;background:radial-gradient(ellipse 75% 75% at 48% 44%, transparent 20%, rgba(0,2,12,.40) 75%,rgba(0,0,4,.78) 100%)}
   .grain{position:fixed;z-index:5;inset:0;pointer-events:none;opacity:.11;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 220 220' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E")}
   .hud{position:absolute;top:calc(21px + env(safe-area-inset-top));left:clamp(18px,5vw,70px);z-index:8;pointer-events:none;text-shadow:0 2px 14px #02030b}
@@ -93,6 +93,7 @@
 </head>
 <body class="splash-active">
 <canvas id="sky" aria-label="Animated 3D TARDIS in space"></canvas>
+<canvas id="cityCanvas" aria-hidden="true"></canvas>
 <canvas id="warpCanvas" aria-hidden="true"></canvas>
 <div class="grain"></div>
 <button id="hiddenHome" type="button" aria-label="Return to title screen" title="Return to title screen"></button>
@@ -127,7 +128,7 @@
 <script>
 (function(){
 'use strict';
-const canvas=document.getElementById('sky'), warpCanvas=document.getElementById('warpCanvas');
+const canvas=document.getElementById('sky'), cityCanvas=document.getElementById('cityCanvas'), warpCanvas=document.getElementById('warpCanvas');
 const splash=document.getElementById('splash'),startButton=document.getElementById('startGame'),record=document.getElementById('flightRecord');
 let running=false,paused=false,warp=0,warpStart=0,warpElapsed=0,warpLastFrame=0,warpLastAudio=0,quality=0,frame=0,visual=null,audio=null,audioOn=false;
 const WARP_DURATION=11.8;
@@ -135,7 +136,172 @@ let menuOpen=true,hasPlayed=false,warpJumps=0,lastFlightTime=0,sceneReady=false;
 // The hidden departure runs once; choosing Restart Experience restores the police box.
 const DEPARTURE_DURATION=12.8;
 let departureStage='idle',departureAge=0,departureAlpha=1,departurePulse=0,departureAudio=null;
+const WHITEOUT_DURATION=3.0,CITY_REVEAL_DURATION=2.4;
+let cityStage='idle',cityAge=0,cityPeople=[],cityNextSpawn=0,cityGlobalTime=0;
+const cityAssets={
+  ready:false,
+  bg:null,
+  tardis:null,
+  people:[]
+};
+const cityAssetManifest={
+  bg:'assets/london_street_bg.webp',
+  tardis:'assets/tardis_box.webp',
+  people:[
+    'assets/ped_man_coat.webp',
+    'assets/ped_man_suit.webp',
+    'assets/ped_woman_trench.webp',
+    'assets/ped_woman_burgundy.webp'
+  ]
+};
 let tapCount=0,lastTapAt=0,lastTapPos=null,pendingDoubleTap=null;
+
+function loadImageAsset(src){return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Failed '+src));img.src=src;});}
+async function loadCityAssets(){
+  try{
+    const [bg,tardis,...people]=await Promise.all([
+      loadImageAsset(cityAssetManifest.bg),
+      loadImageAsset(cityAssetManifest.tardis),
+      ...cityAssetManifest.people.map(loadImageAsset)
+    ]);
+    cityAssets.bg=bg;cityAssets.tardis=tardis;cityAssets.people=people;cityAssets.ready=true;
+  }catch(err){console.warn('City assets unavailable, using procedural fallback.',err)}
+}
+
+function startCitySequence(){cityStage='whiteout';cityAge=0;cityPeople=[];cityNextSpawn=.4;cityGlobalTime=0;}
+function resetCitySequence(){cityStage='idle';cityAge=0;cityPeople=[];cityNextSpawn=0;cityGlobalTime=0;let g=cityCanvas.getContext('2d');if(g)g.clearRect(0,0,cityCanvas.width,cityCanvas.height)}
+function drawCoverImage(g,img,W,H,panX=0,panY=0,zoom=1.04){
+ const iw=img.width, ih=img.height;if(!iw||!ih)return;
+ const scale=Math.max(W/iw,H/ih)*zoom;const dw=iw*scale, dh=ih*scale;
+ const x=(W-dw)/2 + panX*(W*0.06); const y=(H-dh)/2 + panY*(H*0.04);
+ g.drawImage(img,x,y,dw,dh);
+}
+function spawnCityPerson(){
+ const dir=Math.random()<.5?1:-1;
+ const laneRand=Math.random();
+ const lane=laneRand<.34?0:(laneRand<.72?1:2); // 0 distant, 1 mid, 2 foreground
+ const scale=lane===0?rand(.11,.16):(lane===1?rand(.19,.26):rand(.29,.39));
+ const y=lane===0?rand(.61,.68):(lane===1?rand(.72,.79):rand(.83,.92));
+ const speed=(lane===0?rand(.025,.045):(lane===1?rand(.04,.07):rand(.065,.11)))*dir;
+ const x=dir>0?-0.18:1.18;
+ const img=cityAssets.people.length?cityAssets.people[Math.floor(Math.random()*cityAssets.people.length)]:null;
+ const alpha=lane===0?.72:(lane===1?.86:1);
+ cityPeople.push({dir,lane,scale,y,speed,x,img,alpha});
+}
+function updateCitySequence(dt){
+ if(cityStage==='idle')return;
+ cityAge+=dt;cityGlobalTime+=dt;
+ if(cityStage==='whiteout' && cityAge>=WHITEOUT_DURATION){cityStage='reveal';cityAge=0;}
+ else if(cityStage==='reveal' && cityAge>=CITY_REVEAL_DURATION){cityStage='city';cityAge=0;}
+ if(cityStage!=='whiteout'){
+   cityNextSpawn-=dt;
+   if(cityNextSpawn<=0){spawnCityPerson();cityNextSpawn=rand(.85,2.2);}
+   for(let i=cityPeople.length-1;i>=0;i--){let p=cityPeople[i];p.x+=p.speed*dt;if((p.dir>0&&p.x>1.25)||(p.dir<0&&p.x<-0.25))cityPeople.splice(i,1)}
+ }
+}
+function drawSidewalkTardis(g,cx,base,size,pulse){
+ g.save();
+ g.translate(cx,base);g.scale(size,size);
+ const w=1.0,h=1.95,d=.32;
+ g.shadowColor='rgba(0,0,0,.2)';g.shadowBlur=16;g.fillStyle='rgba(0,0,0,.18)';g.beginPath();g.ellipse(.03,0,w*.7,.18,0,0,Math.PI*2);g.fill();g.shadowBlur=0;
+ g.beginPath();g.moveTo(w*.5,-h);g.lineTo(w*.5+d,-h-.14);g.lineTo(w*.5+d,.1);g.lineTo(w*.5,.2);g.closePath();g.fillStyle='#153d71';g.fill();g.strokeStyle='#2f6299';g.lineWidth=.035;g.stroke();
+ g.fillStyle='#194d95';g.fillRect(-w*.5,-h,w,h*2.03);g.strokeStyle='#6f9ed5';g.lineWidth=.04;g.strokeRect(-w*.5,-h,w,h*2.03);
+ g.fillStyle='#204f95';g.fillRect(-w*.54,-h-.13,w*1.08,.15);g.fillStyle='#163d77';g.fillRect(-w*.56,-h-.26,w*1.12,.13);
+ g.fillStyle='#08101c';g.fillRect(-w*.46,-h-.20,w*.92,.11);
+ g.fillStyle='#ecf1f7';g.font='bold .12px Georgia';g.textAlign='center';g.fillText('POLICE  PUBLIC CALL BOX',0,-h-.115);
+ const glowPower=.28+.72*pulse;
+ for(let door of[-1,1]){
+   const dx=door*w*.25;
+   g.fillStyle='#235aa6';g.fillRect(dx-w*.21,-h+.24,w*.42,h*1.56);g.strokeStyle='#4e86ca';g.strokeRect(dx-w*.21,-h+.24,w*.42,h*1.56);
+   for(let c=0;c<2;c++)for(let r=0;r<3;r++){
+     const px=dx+(-.10+c*.20),py=-h+.36+r*.17;
+     const grad=g.createRadialGradient(px,py+.06,0,px,py+.06,.16+.05*pulse);
+     grad.addColorStop(0,`rgba(255,255,255,${.24+.48*glowPower})`);
+     grad.addColorStop(.45,`rgba(172,225,255,${.14+.26*glowPower})`);
+     grad.addColorStop(1,'rgba(84,171,255,0)');
+     g.fillStyle=grad;g.fillRect(px-.18,py-.14,.36,.34);
+     g.fillStyle=`rgba(240,248,255,${.30+.52*glowPower})`;g.fillRect(px-.082,py,.165,.14);
+     g.strokeStyle='#315f96';g.lineWidth=.022;g.strokeRect(px-.082,py,.165,.14);
+   }
+   for(let r=0;r<3;r++){g.fillStyle='#1b477d';g.fillRect(dx-w*.17,-.49+r*.50,w*.34,.34);g.strokeStyle='#3f79b7';g.strokeRect(dx-w*.17,-.49+r*.50,w*.34,.34)}
+ }
+ g.fillStyle='#3267a8';g.fillRect(-w*.56,-.06,w*1.12,.10);
+ g.fillStyle='#2863a9';g.fillRect(-.19,-h-.44,.38,.18);
+ const lamp=g.createRadialGradient(0,-h-.36,0,0,-h-.36,.34+.08*pulse);
+ lamp.addColorStop(0,`rgba(255,255,255,${.5+.4*glowPower})`);lamp.addColorStop(.22,`rgba(181,231,255,${.34+.30*glowPower})`);lamp.addColorStop(1,'rgba(88,176,255,0)');
+ g.fillStyle=lamp;g.fillRect(-.5,-h-.82,1,1);
+ g.fillStyle=`rgba(255,255,255,${.54+.35*glowPower})`;g.fillRect(-.10,-h-.44,.20,.20);
+ g.restore();
+}
+function drawCityPerson(g,p,W,H){
+ const x=p.x*W,y=p.y*H + Math.sin(cityGlobalTime*9.0 + p.x*4.0)*H*.0025;
+ const s=H*p.scale; 
+ g.save();
+ g.globalAlpha=p.alpha;
+ g.translate(x,y);
+ g.fillStyle='rgba(0,0,0,.13)';g.beginPath();g.ellipse(0,s*.48,s*.18,s*.05,0,0,Math.PI*2);g.fill();
+ if(p.img&&p.img.complete){
+   if(p.dir<0){g.scale(-1,1)}
+   const aspect=p.img.width/p.img.height;
+   const dw=s*aspect, dh=s;
+   g.drawImage(p.img,-dw/2,-dh,dw,dh);
+ }else{
+   g.fillStyle='rgba(88,72,82,.92)';g.beginPath();g.arc(0,-s*.72,s*.13,0,Math.PI*2);g.fill();
+   g.strokeStyle='rgba(88,72,82,.92)';g.lineWidth=s*.12;g.lineCap='round';
+   g.beginPath();g.moveTo(0,-s*.58);g.lineTo(0,-s*.08);g.moveTo(0,-s*.4);g.lineTo(-s*.18,-s*.2);g.moveTo(0,-s*.34);g.lineTo(s*.18,-s*.13);g.moveTo(0,-s*.08);g.lineTo(-s*.13,s*.3);g.moveTo(0,-s*.08);g.lineTo(s*.15,s*.28);g.stroke();
+ }
+ g.restore();
+}
+function drawAssetTardis(g,W,H,reveal){
+ const pulse=.5+.5*Math.sin(cityGlobalTime*1.55);
+ const baseY=H*.88, x=W*.34, h=Math.min(H*.50,W*.87);
+ g.save();
+ g.globalAlpha=.96*reveal;
+ g.fillStyle='rgba(0,0,0,.18)';g.beginPath();g.ellipse(x,baseY-6,h*.17,h*.045,0,0,Math.PI*2);g.fill();
+ if(cityAssets.ready&&cityAssets.tardis&&cityAssets.tardis.complete){
+   const img=cityAssets.tardis; const aspect=img.width/img.height; const dh=h*(1+.012*Math.sin(cityGlobalTime*.7)); const dw=dh*aspect;
+   g.shadowColor=`rgba(127,191,255,${.10+.16*pulse})`;g.shadowBlur=22+15*pulse;
+   g.drawImage(img,x-dw/2,baseY-dh,dw,dh);
+   g.shadowBlur=0;
+   // extra lantern/window bloom
+   g.globalCompositeOperation='screen';
+   const bloom=g.createRadialGradient(x,baseY-dh*.93,0,x,baseY-dh*.93,dh*.22);
+   bloom.addColorStop(0,`rgba(255,255,255,${.08+.16*pulse})`);bloom.addColorStop(.35,`rgba(151,216,255,${.08+.14*pulse})`);bloom.addColorStop(1,'rgba(81,161,255,0)');
+   g.fillStyle=bloom;g.fillRect(x-dh*.28,baseY-dh*1.18,dh*.56,dh*.42);
+   g.globalCompositeOperation='source-over';
+ }else{
+   drawSidewalkTardis(g,x,baseY,Math.min(W,H)*.155,pulse*.25);
+ }
+ g.restore();
+}
+function drawCityOverlay(dt){
+ const g=cityCanvas.getContext('2d');if(!g)return;
+ const dpr=Math.min(window.devicePixelRatio||1,2),W=window.innerWidth,H=window.innerHeight;
+ const ww=Math.floor(W*dpr),hh=Math.floor(H*dpr);if(cityCanvas.width!==ww||cityCanvas.height!==hh){cityCanvas.width=ww;cityCanvas.height=hh;g.setTransform(dpr,0,0,dpr,0,0)}
+ g.clearRect(0,0,W,H);
+ if(cityStage==='idle')return;
+ updateCitySequence(dt);
+ const reveal=cityStage==='whiteout'?0:(cityStage==='reveal'?smoothstep(0,CITY_REVEAL_DURATION,cityAge):1);
+ const white=cityStage==='whiteout'?smoothstep(0,WHITEOUT_DURATION,cityAge):(cityStage==='reveal'?(1-smoothstep(0,CITY_REVEAL_DURATION,cityAge)):0);
+ if(reveal>0){
+   if(cityAssets.ready&&cityAssets.bg&&cityAssets.bg.complete){
+     drawCoverImage(g,cityAssets.bg,W,H,Math.sin(cityGlobalTime*.08),-.15,1.03);
+   }else{
+     let sky=g.createLinearGradient(0,0,0,H);sky.addColorStop(0,'#d5dbe5');sky.addColorStop(.55,'#b2bfcb');sky.addColorStop(1,'#8d98a3');g.fillStyle=sky;g.fillRect(0,0,W,H);
+     g.fillStyle='#70808c';g.fillRect(0,H*.71,W,H*.29);g.fillStyle='#97a5ae';g.beginPath();g.moveTo(0,H*.78);g.lineTo(W*.72,H*.69);g.lineTo(W,H*.69);g.lineTo(W,H);g.lineTo(0,H);g.closePath();g.fill();
+   }
+   // atmosphere and grading
+   let topFog=g.createLinearGradient(0,0,0,H);topFog.addColorStop(0,'rgba(205,214,225,.16)');topFog.addColorStop(.45,'rgba(255,255,255,0)');topFog.addColorStop(1,'rgba(20,26,38,.08)');g.fillStyle=topFog;g.fillRect(0,0,W,H);
+   // distant and mid pedestrians first
+   cityPeople.filter(p=>p.lane<2).sort((a,b)=>a.scale-b.scale).forEach(p=>drawCityPerson(g,p,W,H));
+   drawAssetTardis(g,W,H,reveal);
+   cityPeople.filter(p=>p.lane>=2).sort((a,b)=>a.scale-b.scale).forEach(p=>drawCityPerson(g,p,W,H));
+   // subtle street bloom / vignette
+   let fog=g.createRadialGradient(W*.52,H*.64,Math.min(W,H)*.15,W*.52,H*.68,Math.max(W,H)*.9);
+   fog.addColorStop(0,'rgba(255,255,255,.03)');fog.addColorStop(.72,'rgba(0,0,0,0)');fog.addColorStop(1,'rgba(0,0,0,.23)');g.fillStyle=fog;g.fillRect(0,0,W,H);
+ }
+ if(white>0){g.fillStyle=`rgba(255,255,255,${white})`;g.fillRect(0,0,W,H)}
+}
 function clearTaps(){tapCount=0;lastTapAt=0;lastTapPos=null;if(pendingDoubleTap!==null){clearTimeout(pendingDoubleTap);pendingDoubleTap=null}}
 function smoothstep(a,b,x){let v=Math.max(0,Math.min(1,(x-a)/(b-a)));return v*v*(3-2*v)}
 function updateDeparture(dt){
@@ -149,14 +315,14 @@ function updateDeparture(dt){
  let wavering=1-(.10+.22*dissolve)*(1-breath);
  departureAlpha=Math.max(0,Math.pow(1-dissolve,1.08)*wavering);
  departurePulse=breath*(1-smoothstep(11.05,DEPARTURE_DURATION,x));
- if(x>=DEPARTURE_DURATION){departureStage='gone';departureAlpha=0;departurePulse=0;updateRecord();}
+ if(x>=DEPARTURE_DURATION){departureStage='gone';departureAlpha=0;departurePulse=0;startCitySequence();updateRecord();}
 }
 // Let bright windows and beacon persist independently while the wooden box fades.
 function departureLightFade(){return departureStage==='leaving' ? (1-smoothstep(11.15,DEPARTURE_DURATION,departureAge)) : 0;}
 function stopDepartureAudio(){
  if(departureAudio){try{departureAudio.master.gain.setTargetAtTime(0,departureAudio.ac.currentTime,.06)}catch(_){}departureAudio=null;}
 }
-function resetDeparture(){stopDepartureAudio();departureStage='idle';departureAge=0;departureAlpha=1;departurePulse=0;clearTaps();if(visual&&visual.reset)visual.reset();}
+function resetDeparture(){stopDepartureAudio();departureStage='idle';departureAge=0;departureAlpha=1;departurePulse=0;resetCitySequence();clearTaps();if(visual&&visual.reset)visual.reset();}
 function beginDeparture(){
  if(menuOpen||!sceneReady||departureStage!=='idle')return;
  if(paused)togglePause();
@@ -588,7 +754,7 @@ function start3D(){if(running)return;let THREE=window.THREE;if(!THREE){startFall
  let clock=new THREE.Clock(),elapsed=lastFlightTime,last=0,baseFov=46;
  function resize(){let W=window.innerWidth,H=window.innerHeight,device=Math.min(window.devicePixelRatio||1,2.3),cap=quality===2?1:quality===1?2.25:(W<850?1.5:1.9);renderer.setPixelRatio(Math.min(device,cap));renderer.setSize(W,H,false);camera.aspect=W/H;baseFov=W<H?56:46;camera.fov=baseFov;camera.updateProjectionMatrix();renderer.shadowMap.enabled=quality!==2;starMat.uniforms.uScale.value=Math.min(device,cap);}
  let initPositions={theta:.45,phi:.12,radius:window.innerWidth<660?7.7:9.3};
- function render(time){requestAnimationFrame(render);warpOverlay(time);let dt=Math.min(clock.getDelta(),.06);updateDeparture(dt);if(!paused&&!menuOpen){elapsed+=dt;lastFlightTime=elapsed;orbitTheta+=(targetTheta-orbitTheta)*Math.min(1,dt*3.1);orbitPhi+=(targetPhi-orbitPhi)*Math.min(1,dt*3.1);orbitRadius+=(targetRadius-orbitRadius)*Math.min(1,dt*4);}
+ function render(time){requestAnimationFrame(render);warpOverlay(time);let dt=Math.min(clock.getDelta(),.06);updateDeparture(dt);drawCityOverlay(dt);if(!paused&&!menuOpen){elapsed+=dt;lastFlightTime=elapsed;orbitTheta+=(targetTheta-orbitTheta)*Math.min(1,dt*3.1);orbitPhi+=(targetPhi-orbitPhi)*Math.min(1,dt*3.1);orbitRadius+=(targetRadius-orbitRadius)*Math.min(1,dt*4);}
  if(!paused&&!menuOpen){let sway=elapsed*.14;world.rotation.y=.25+Math.sin(sway)*.18+elapsed*.12;world.rotation.x=.11+Math.sin(elapsed*.23)*.11;world.rotation.z=-.13+Math.sin(elapsed*.51)*.055+warp*.23;world.position.set(Math.sin(elapsed*.24)*.28+Math.sin(elapsed*6)*warp*.06,Math.sin(elapsed*.68)*.21,warp*.2);world.scale.setScalar(1+warp*.04);neon.intensity=(7+warp*10)*departureAlpha+departurePulse*departureLightFade()*16;key.intensity=3.7+.3*Math.sin(elapsed*.7)+warp*2;nebula.material.uniforms.uTime.value=elapsed*.025;starMat.uniforms.uTime.value=elapsed;space.rotation.y+=.000018*(1+warp*25);dustGroup.rotation.y+=.00013*(1+warp*17)}
  // A camera orbit remains available even after the TARDIS is completely gone.
  let t=orbitTheta+(dragging?0:Math.sin(elapsed*.12)*.13);camera.position.set(Math.sin(t)*Math.cos(orbitPhi)*orbitRadius,2.1+Math.sin(orbitPhi)*orbitRadius*.58,Math.cos(t)*Math.cos(orbitPhi)*orbitRadius);
@@ -643,12 +809,14 @@ function start3D(){if(running)return;let THREE=window.THREE;if(!THREE){startFall
  g.fillStyle=`rgba(255,255,255,${Math.min(1,.46+.35*power)})`;
  g.fillRect(-.125*s,-1.74*s,.25*s,.25*s);g.restore();g.restore();
  g.restore()}
- function render(t){requestAnimationFrame(render);warpOverlay(t);let dpr=Math.min(devicePixelRatio||1,2);let W=innerWidth,H=innerHeight;if(canvas.width!==Math.floor(W*dpr)||canvas.height!==Math.floor(H*dpr))resize();let dt=Math.min(.06,Math.max(0,(t-last)/1000));updateDeparture(dt);if(!paused&&!menuOpen){elapsed+=dt;lastFlightTime=elapsed}last=t;
+ function render(t){requestAnimationFrame(render);warpOverlay(t);let dpr=Math.min(devicePixelRatio||1,2);let W=innerWidth,H=innerHeight;if(canvas.width!==Math.floor(W*dpr)||canvas.height!==Math.floor(H*dpr))resize();let dt=Math.min(.06,Math.max(0,(t-last)/1000));updateDeparture(dt);drawCityOverlay(dt);if(!paused&&!menuOpen){elapsed+=dt;lastFlightTime=elapsed}last=t;
  let g=ctx;g.fillStyle='#030615';g.fillRect(0,0,W,H);let skyX=W*(.56+Math.sin(lookYaw)*.12),skyY=H*(.45+Math.sin(lookPitch)*.12);let n=g.createRadialGradient(skyX,skyY,0,skyX,skyY,Math.max(W,H)*.8);n.addColorStop(0,'#1a194e');n.addColorStop(.42,'#08172f');n.addColorStop(1,'#02030c');g.fillStyle=n;g.fillRect(0,0,W,H);
  for(let i=0;i<8;i++){let x=W*wrap01(.25+.6*(i%4)/4+lookYaw*.08),y=H*wrap01(.26+(i%3)*.23+lookPitch*.10),r=Math.min(W,H)*(.33+.08*i);let g1=g.createRadialGradient(x,y,0,x,y,r);let rgb=i%3===0?'110,64,166':i%3===1?'40,122,177':'44,74,140';g1.addColorStop(0,`rgba(${rgb},.18)`);g1.addColorStop(1,`rgba(${rgb},0)`);g.fillStyle=g1;g.fillRect(x-r,y-r,r*2,r*2)}
  for(let s of stars){let tw=.65+.35*Math.sin(elapsed*s.v+s.phase);g.globalAlpha=tw*.9;g.fillStyle=s.s>1.7?'#b9dfff':'#e9efff';g.beginPath();let px=wrap01(.5+(s.x-.5)*skyZoom+lookYaw*(.13+.22*s.v))*W,py=wrap01(.5+(s.y-.5)*skyZoom+lookPitch*(.14+.21*s.v))*H;g.arc(px,py,s.s*.49,0,Math.PI*2);g.fill()}g.globalAlpha=1;
  if(departureStage!=='gone'){let size=Math.min(W*.43,H*.29,175)*dist;g.save();g.translate(W*.5,H*.53+Math.sin(elapsed*.8)*13);g.rotate(Math.sin(elapsed*.11)*.12+az);model(g,size);g.restore();}}
  visual={resize,drag(dx,dy){if(departureStage!=='gone')az+=dx*.0009;if(departureStage!=='idle'){lookYaw+=dx*.003;lookPitch+=dy*.003;}},zoom(d){if(departureStage==='gone')skyZoom=Math.max(.75,Math.min(1.6,skyZoom-d*.005));else dist=Math.max(.65,Math.min(1.5,dist-d*.015))},reset(){az=.2;dist=1;lookYaw=0;lookPitch=0;skyZoom=1},restart(){elapsed=0;az=.2;dist=1;lookYaw=0;lookPitch=0;skyZoom=1}};resize();render(performance.now());}
+// Load the photographic reveal assets immediately, before the visitor starts the experience.
+loadCityAssets();
 // Try two content delivery networks, falling back safely rather than hanging on "Loading".
 let primary=document.createElement('script');primary.src='https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js';primary.async=true;let settled=false;
 primary.onload=()=>{if(!running)start3D()};primary.onerror=()=>{let secondary=document.createElement('script');secondary.src='https://unpkg.com/three@0.152.2/build/three.min.js';secondary.async=true;secondary.onload=()=>{if(!running)start3D()};secondary.onerror=()=>{if(!running)startFallback()};document.head.appendChild(secondary)};
